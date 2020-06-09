@@ -1,0 +1,4 @@
+out/*
+Server/__MACOSX/*
+Client/__MACOSX/*
+.idea/
