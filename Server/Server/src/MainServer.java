@@ -1,11 +1,15 @@
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import java.io.*;
+import java.math.BigInteger;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.*;
 import java.util.Base64;
+import java.util.Scanner;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class MainServer extends javax.swing.JFrame {
 
@@ -15,7 +19,12 @@ public class MainServer extends javax.swing.JFrame {
     private ServerSocket server;
     private int totalClients = 100;
     private int port = 6789;
-    private PublicKey receiverPublicKey;
+    private PublicKey receiverpubKey;
+    private KeyPair senderkeyPair;
+    private PublicKey senderpubKey;
+    private PrivateKey senderprivateKey;
+    static Cipher ecipher, dcipher;//Required for DES
+
     public MainServer() {
         
         initComponents();
@@ -30,18 +39,9 @@ public class MainServer extends javax.swing.JFrame {
         myServer.startRunning();
     }
 
-    public static KeyPair buildKeyPair() throws NoSuchAlgorithmException {
-        final int keySize = 2048;
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
-        keyPairGenerator.initialize(keySize);
-        return keyPairGenerator.genKeyPair();
-    }
-
     public void startRunning()
     {
-        KeyPair senderkeyPair;
-        PublicKey senderpubKey = null;
-        PrivateKey senderprivateKey;
+
         try
         {
             server=new ServerSocket(port, totalClients);
@@ -61,10 +61,9 @@ public class MainServer extends javax.swing.JFrame {
                     output.writeObject(senderpubKey);
                     output.flush();
                     input = new ObjectInputStream(connection.getInputStream());
-
+                    // send public key initially
                     Object pubKey = input.readObject();
-                    receiverPublicKey = (PublicKey) pubKey;
-                    System.out.println(pubKey);
+                    receiverpubKey = (PublicKey) pubKey;
                     whileChatting();
 
                 }catch(EOFException eofException)
@@ -89,8 +88,10 @@ public class MainServer extends javax.swing.JFrame {
         do{
                 try
                 {
-                        message = (String) input.readObject();
+
+                    message = (String) input.readObject();
                         chatArea.append("\n"+message);
+
                 }catch(ClassNotFoundException classNotFoundException)
                 {
                         
@@ -124,7 +125,11 @@ public class MainServer extends javax.swing.JFrame {
 
         jTextField1.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
-                jTextField1ActionPerformed(evt);
+                try {
+                    jTextField1ActionPerformed(evt);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         });
         jPanel1.add(jTextField1);
@@ -133,7 +138,11 @@ public class MainServer extends javax.swing.JFrame {
         jButton1.setText("Send");
         jButton1.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
-                jButton1ActionPerformed(evt);
+                try {
+                    jButton1ActionPerformed(evt);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         });
         jPanel1.add(jButton1);
@@ -167,30 +176,140 @@ public class MainServer extends javax.swing.JFrame {
         setLocationRelativeTo(null);
     }// </editor-fold>//GEN-END:initComponents
 
-    private void jButton1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jButton1ActionPerformed
+    private void jButton1ActionPerformed(java.awt.event.ActionEvent evt) throws Exception {//GEN-FIRST:event_jButton1ActionPerformed
         
-        sendMessage(jTextField1.getText());
+        sendMessage(jTextField1.getText(), senderpubKey, senderprivateKey, receiverpubKey);
 	jTextField1.setText("");
     }//GEN-LAST:event_jButton1ActionPerformed
 
-    private void jTextField1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jTextField1ActionPerformed
+    private void jTextField1ActionPerformed(java.awt.event.ActionEvent evt) throws Exception {//GEN-FIRST:event_jTextField1ActionPerformed
         
-        sendMessage(jTextField1.getText());
+        sendMessage(jTextField1.getText(),senderpubKey, senderprivateKey, receiverpubKey);
 	jTextField1.setText("");
     }//GEN-LAST:event_jTextField1ActionPerformed
 
-    private void sendMessage(String message)
+    private void sendMessage(String message, PublicKey senderpubKey, PrivateKey senderprivateKey, PublicKey receiverpubKey)  throws Exception
     {
         try
         {
-            output.writeObject("Server - " + message);
-            output.flush();
             chatArea.append("\nServer - "+message);
+
+            System.out.print("\nPGP Simulation:\nSender Side: Input messsage= " + message);
+
+            //Generating SHA-512 hash of original message
+            String hashout = sha512(message);
+            System.out.println("\nSender Side: Hash of Message=\n"+hashout);
+
+            //Encrypt the message hash with sender private keys -> Digital Signature
+            String encryptedprivhash = encrypt(senderpubKey, senderprivateKey, hashout, 0);
+            System.out.println("\nSender Side: Hash Encrypted with Sender Private Key (Digital Signature)=\n"+ encryptedprivhash);
+
+            //Append original message and encrypted hash
+            String beforezipstring[] = {message, encryptedprivhash};
+            System.out.println("\nSender Side: Message before Compression=\n"+beforezipstring[0]+beforezipstring[1]);
+
+            //Apply zip to beforezipbytes[][]
+            String afterzipstring[] = new String[beforezipstring.length];
+            System.out.println("\nSender Side: Message after Compression=");
+            for (int i=0;i<beforezipstring.length;i++) {
+                afterzipstring[i] = compress(beforezipstring[i]);
+                System.out.println(afterzipstring[i]);
+            }
+
+            //Encrypt zipstring with DES
+            SecretKey key = KeyGenerator.getInstance("DES").generateKey();
+            System.out.println("\nSender Side: SecretKey DES=\n"+key.toString());
+            String afterzipstringDES[] = new String[afterzipstring.length+1];
+            System.out.println("\nSender Side: Compressed Message Encrypted with SecretKey=");
+            for (int i=0;i<afterzipstring.length;i++) {
+                afterzipstringDES[i] = encryptDES(afterzipstring[i], key);
+                System.out.println(afterzipstringDES[i]);
+            }
+
+            //Encrypt DES key with Receiver Public Key using RSA
+            String encodedKey = Base64.getEncoder().encodeToString(key.getEncoded());
+            //SecretKey is base64 encoded since direct string enccryption gives key in string format during decryption which cant be converted to SecretKey Format
+            String keyencryptedwithreceiverpub = encrypt(receiverpubKey, null, encodedKey, 1);
+            System.out.println("\nSender Side: DES SecretKey Encrypted with Receiver Public Key=\n"+keyencryptedwithreceiverpub);
+
+            //Decrypting DES key with Receiver Private Key using RSA
+            afterzipstringDES[2]=keyencryptedwithreceiverpub;
+            String messagetoreceiver[] = afterzipstringDES;
+            System.out.println("\nFinal Message to receiver=");
+            for (int i=0;i<messagetoreceiver.length;i++) {
+                System.out.println(messagetoreceiver[i]);
+            }
+            output.writeObject(messagetoreceiver);
+            output.flush();
+
+
         }
         catch(IOException ioException)
         {
             chatArea.append("\n Unable to Send Message");
         }
+    }
+
+
+
+    public static String encryptDES(String str, SecretKey key) throws Exception {
+        ecipher = Cipher.getInstance("DES");
+        ecipher.init(Cipher.ENCRYPT_MODE, key);
+        // Encode the string into bytes using utf-8
+        byte[] utf8 = str.getBytes("UTF8");
+        // Encrypt
+        byte[] enc = ecipher.doFinal(utf8);
+        // Encode bytes to base64 to get a string
+        return Base64.getEncoder().encodeToString(enc);
+    }
+
+    public static String compress(String data) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(data.length());
+        GZIPOutputStream gzip = new GZIPOutputStream(bos);
+        gzip.write(data.getBytes());
+        gzip.close();
+        byte[] compressed = bos.toByteArray();
+        bos.close();
+        return Base64.getEncoder().encodeToString(compressed);
+    }
+
+
+    //Takes any string as input and calculates sha 512 bit hash. Output is in 128 bit hex string
+    public static String sha512(String rawinput){
+        String hashout = "";
+        try{
+            MessageDigest digest = MessageDigest.getInstance("SHA-512");
+            digest.reset();
+            digest.update(rawinput.getBytes("utf8"));
+            hashout = String.format("%040x", new BigInteger(1, digest.digest()));
+        }
+        catch(Exception E){
+            System.out.println("Hash Exception");
+        }
+        return hashout;
+    }
+
+
+    //n: 0->encryptwithprivatekey 1->encryptwithpublickey
+    public static String encrypt(PublicKey publicKey, PrivateKey privateKey, String message, int ch) throws Exception {
+        Cipher cipher = Cipher.getInstance("RSA");
+        if (ch == 0) {
+            cipher.init(Cipher.ENCRYPT_MODE, privateKey);
+            byte[] utf8 = cipher.doFinal(message.getBytes("UTF-8"));
+            return Base64.getEncoder().encodeToString(utf8);
+        }
+        else {
+            cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+            byte[] utf8 = cipher.doFinal(message.getBytes("UTF-8"));
+            return Base64.getEncoder().encodeToString(utf8);
+        }
+    }
+
+    public static KeyPair buildKeyPair() throws NoSuchAlgorithmException {
+        final int keySize = 2048;
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+        keyPairGenerator.initialize(keySize);
+        return keyPairGenerator.genKeyPair();
     }
 
    
